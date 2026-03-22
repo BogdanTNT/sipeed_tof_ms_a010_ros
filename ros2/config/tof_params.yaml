@@ -1,0 +1,22 @@
+/**:
+  ros__parameters:
+    device: "/dev/ttyUSB0"
+    frame_id: "camera_optical_frame"
+    timer_period_ms: 30
+    # Stamp data slightly in the past so TF for the arm/camera chain is
+    # available when RViz transforms the cloud into base_link.
+    timestamp_offset_ms: 100
+
+    # Keep startup on the known-good baseline stream by default.
+    # Enable this only if you want the node to push AT+BINN / AT+FPS / AT+UNIT
+    # automatically during startup.
+    apply_sensor_settings: false
+
+    # Optional sensor-side controls.
+    # 1: 100x100, 2: 50x50, 4: 25x25
+    binning: 2
+    # Legacy working mode from the original driver.
+    display_mode: 3
+    fps: 10
+    quantization_unit: 0
+
