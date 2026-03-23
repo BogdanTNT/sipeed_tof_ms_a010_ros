@@ -4,15 +4,15 @@
 
 This package provides a ROS 2 driver for the Sipeed MS-A010 ToF sensor.
 
-This local version is not trying to be a generic driver for many devices and
-many firmware variations. It is set up for one real sensor in one real robot
-stack, with practical defaults for:
-
 - raw depth image publishing
 - colored point cloud publishing
 - `CameraInfo` publishing
 - launch + YAML configuration
+- multi-camera launch from separate YAML files
 - TF-friendly timestamping for RViz
+- published points in real world metric space
+- optional sensor-side setup commands with ROS params
+- timestamp offset parameter to reduce intermittent RViz TF errors
 
 The package name is:
 
@@ -21,7 +21,7 @@ The package name is:
 
 ## What It Publishes
 
-Topics:
+The node itself publishes these relative topic names:
 
 - `depth`
   Raw 8-bit depth image from the sensor as `sensor_msgs/msg/Image`
@@ -30,53 +30,54 @@ Topics:
 - `depth/camera_info`
   `sensor_msgs/msg/CameraInfo`
 
+If you launch a single camera with the default launch file:
+
+```bash
+ros2 launch sipeed_tof_ms_a010 tof_node.launch.py
+```
+
+the launch file uses the YAML filename stem as the namespace. With the default
+`tof_params.yaml`, the full topics become:
+
+- `/tof_params/depth`
+- `/tof_params/cloud`
+- `/tof_params/depth/camera_info`
+
+If you launch multiple cameras from different YAML files:
+
+```bash
+ros2 launch sipeed_tof_ms_a010 tof_node.launch.py \
+  params_file:=/path/to/front_tof.yaml
+
+ros2 launch sipeed_tof_ms_a010 tof_node.launch.py \
+  params_file:=/path/to/wrist_tof.yaml
+```
+
+then each camera gets its own namespace automatically:
+
+- `front_tof.yaml` publishes to:
+  `/front_tof/depth`, `/front_tof/cloud`, `/front_tof/depth/camera_info`
+- `wrist_tof.yaml` publishes to:
+  `/wrist_tof/depth`, `/wrist_tof/cloud`, `/wrist_tof/depth/camera_info`
+
+You can also override the namespace explicitly:
+
+```bash
+ros2 launch sipeed_tof_ms_a010 tof_node.launch.py \
+  namespace:=tof_front \
+  params_file:=/path/to/front_tof.yaml
+```
+
+which gives:
+
+- `/tof_front/depth`
+- `/tof_front/cloud`
+- `/tof_front/depth/camera_info`
+
 Important:
 
 - The `depth` image is the raw `mono8` payload from the sensor
 - The point cloud is where the driver converts raw values into metric `x/y/z`
-
-
-## Current Depth Model
-
-This driver currently uses the sensor's documented unit-dependent depth
-conversion:
-
-```text
-if UNIT == 0:
-  z = (raw / 5.1)^2 / 1000
-
-if UNIT > 0:
-  z = raw * UNIT / 1000
-```
-
-Then:
-
-```text
-x = (u - u0) * z / fx
-y = (v - v0) * z / fy
-```
-
-Where `fx`, `fy`, `u0`, and `v0` come from the camera coefficients returned by
-`AT+COEFF?`.
-
-This means:
-
-- `depth` stays raw
-- `cloud` is metric
-- changing `quantization_unit` changes how the raw 8-bit payload maps to meters
-
-
-## Features In This Local Version
-
-- ROS 2 launch file
-- YAML configuration file
-- `depth/camera_info` publishing
-- clean serial helper and command handling
-- optional sensor-side setup commands
-- backward-compatible `publisher` executable
-- friendlier `sipeed_tof_node` executable
-- timestamp offset parameter to reduce intermittent RViz TF errors
-
 
 ## Requirements
 
@@ -139,6 +140,18 @@ That gives you separate topics such as:
 You can still override `namespace:=...` or `node_name:=...` explicitly if you
 want.
 
+The node publishes relative topic names:
+
+- `depth`
+- `cloud`
+- `depth/camera_info`
+
+So with `front_tof.yaml`, those become:
+
+- `/front_tof/depth`
+- `/front_tof/cloud`
+- `/front_tof/depth/camera_info`
+
 You can also run the node directly:
 
 ```bash
@@ -162,14 +175,15 @@ The default parameters live in `config/tof_params.yaml`.
 - `frame_id`
   TF frame used in published messages, for example `camera_optical_frame`
 - `timer_period_ms`
-  Publish loop period in milliseconds
+  Legacy compatibility parameter. The current driver uses a continuous serial
+  reader thread, so this no longer controls the real publish cadence.
 - `timestamp_offset_ms`
   Stamps messages slightly in the past so RViz can find the matching TF more
   reliably
 - `apply_sensor_settings`
-  Enables the extra `AT+BINN`, `AT+FPS`, and `AT+UNIT` commands during
-  startup. The default is `false` so the node comes up on the known-good
-  baseline stream first.
+  Enables the extra `AT+BINN` and `AT+FPS` commands during startup. The
+  default is `false` so the node comes up on the known-good baseline stream
+  first.
 - `binning`
   Sensor binning mode
 - `display_mode`
@@ -177,12 +191,18 @@ The default parameters live in `config/tof_params.yaml`.
 - `fps`
   Sensor frame rate command value
 - `quantization_unit`
-  Sensor quantization unit command value
+  Sensor quantization unit command value. This one is enforced at startup even
+  when `apply_sensor_settings` is `false`, because it changes the depth model.
 
 For multiple cameras, each YAML should at least use a different:
 
 - `device`
 - `frame_id`
+
+Strongly recommended:
+
+- use stable serial paths such as `/dev/serial/by-id/...`
+- use distinct YAML filenames so the auto-derived namespaces do not collide
 
 Live update:
 
@@ -192,6 +212,13 @@ ros2 param set /sipeed_tof_node quantization_unit 1
 
 The node will stop the stream, send `AT+UNIT=<value>`, and restart the stream
 without requiring a full restart.
+
+If you use the auto-derived multi-camera namespacing, the parameter path also
+changes. For example, with `front_tof.yaml`:
+
+```bash
+ros2 param set /front_tof/front_tof_node quantization_unit 1
+```
 
 If a live reconfigure or startup reconfigure makes the camera stop producing
 frames, the driver now falls back to the baseline stream automatically so
@@ -238,20 +265,6 @@ Suggested values:
 - if needed, try `200`
 
 Higher values reduce TF errors but add more visual lag.
-
-
-## Calibration Notes
-
-Right now the driver uses the GitHub repo's depth model on purpose.
-
-Because this setup is for one fixed device, the most accurate long-term
-approach would be a per-device calibration, ideally:
-
-- a lookup table from raw sensor value to meters, or
-- a fitted curve validated against real measurements
-
-For now, the driver intentionally uses the GitHub repo's method because that is
-the behavior you requested to trust and keep.
 
 
 ## Troubleshooting
@@ -306,13 +319,14 @@ apply_sensor_settings: false
 ```
 
 This avoids extra setup commands that some firmware variants may not like.
+Note that `quantization_unit` is still enforced separately at startup.
 
 
 ## Known Limitations
 
 - Linux serial path only
-- current metric depth comes from the GitHub repo formula, not from a
-  measurement-based LUT
+- current metric depth uses the sensor's documented unit-dependent conversion,
+  not a measurement-based LUT
 - `frame_struct.h` still uses the old flexible-array style payload definition,
   which causes a pedantic compiler warning
 
