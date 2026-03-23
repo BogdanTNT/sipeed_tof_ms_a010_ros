@@ -181,11 +181,12 @@ The default parameters live in `config/tof_params.yaml`.
   Stamps messages slightly in the past so RViz can find the matching TF more
   reliably
 - `apply_sensor_settings`
-  Enables the extra `AT+BINN` and `AT+FPS` commands during startup. The
-  default is `false` so the node comes up on the known-good baseline stream
-  first.
+  Enables the extra startup `AT+FPS` command. The default is `false` so the
+  node comes up on the known-good baseline stream first.
 - `binning`
   Sensor binning mode
+  Note: `binning: 2` is slower to settle on this sensor than `1` or `4`
+  and may take about 1-2 seconds before valid frames resume.
 - `display_mode`
   Sensor display/output mode
 - `fps`
@@ -319,7 +320,8 @@ apply_sensor_settings: false
 ```
 
 This avoids extra setup commands that some firmware variants may not like.
-Note that `quantization_unit` is still enforced separately at startup.
+Note that `binning` and `quantization_unit` are still enforced separately at
+startup.
 
 
 ## Known Limitations

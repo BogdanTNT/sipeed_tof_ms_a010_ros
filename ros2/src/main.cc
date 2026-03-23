@@ -124,10 +124,22 @@ class SipeedTOFMSA010Node : public rclcpp::Node {
       return false;
     }
 
+    if (!enforce_binning_locked(binning_)) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "Failed to enforce startup binning=%d.", binning_);
+      return false;
+    }
+
     if (!enforce_quantization_unit_locked(quantization_unit_)) {
       RCLCPP_ERROR(this->get_logger(),
                    "Failed to enforce startup quantization_unit=%d.",
                    quantization_unit_);
+      return false;
+    }
+
+    if (apply_sensor_settings_ && fps_ != 10 && !apply_fps(fps_)) {
+      RCLCPP_ERROR(this->get_logger(), "Failed to enforce startup fps=%d.",
+                   fps_);
       return false;
     }
 
@@ -137,19 +149,6 @@ class SipeedTOFMSA010Node : public rclcpp::Node {
 
     if (!start_stream_and_confirm()) {
       return false;
-    }
-
-    if (apply_sensor_settings_ &&
-        (binning_ != 1 || fps_ != 10 || quantization_unit_ != 0)) {
-      RCLCPP_INFO(this->get_logger(),
-                  "Applying requested startup sensor settings: binning=%d, "
-                  "fps=%d, quantization_unit=%d",
-                  binning_, fps_, quantization_unit_);
-      if (!reconfigure_sensor(binning_, fps_, quantization_unit_, true)) {
-        RCLCPP_WARN(this->get_logger(),
-                    "Requested startup sensor settings could not be applied. "
-                    "Keeping baseline stream so publishing continues.");
-      }
     }
 
     return true;
@@ -163,7 +162,13 @@ class SipeedTOFMSA010Node : public rclcpp::Node {
       return false;
     }
     drain_input();
-    std::this_thread::sleep_for(100ms);
+    if (binning == 2) {
+      // The A010 docs call out 2x2 binning as a mode that needs about 1-2
+      // seconds before frames are valid again.
+      std::this_thread::sleep_for(1500ms);
+    } else {
+      std::this_thread::sleep_for(100ms);
+    }
     return true;
   }
 
@@ -230,6 +235,75 @@ class SipeedTOFMSA010Node : public rclcpp::Node {
     RCLCPP_WARN(this->get_logger(),
                 "Timed out while querying AT+UNIT?.");
     return false;
+  }
+
+  bool query_binning(int &binning) {
+    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    serial_->drain();
+    serial_->writeString("AT+BINN?\r");
+
+    std::string response;
+    auto start_time = std::chrono::steady_clock::now();
+    while (std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - start_time)
+               .count() < 1000) {
+      response += serial_->readString();
+
+      const size_t prefix = response.find("+BINN=");
+      if (prefix != std::string::npos) {
+        size_t begin = prefix + 6;
+        while (begin < response.size() &&
+               std::isspace(static_cast<unsigned char>(response[begin]))) {
+          ++begin;
+        }
+
+        size_t end = begin;
+        while (end < response.size() &&
+               std::isdigit(static_cast<unsigned char>(response[end]))) {
+          ++end;
+        }
+
+        if (end > begin) {
+          binning = std::stoi(response.substr(begin, end - begin));
+          drain_input();
+          return true;
+        }
+      }
+
+      std::this_thread::sleep_for(10ms);
+    }
+
+    RCLCPP_WARN(this->get_logger(), "Timed out while querying AT+BINN?.");
+    return false;
+  }
+
+  bool enforce_binning_locked(int desired_binning) {
+    if (desired_binning != 1 && desired_binning != 2 && desired_binning != 4) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "Binning %d is invalid. Expected one of: 1, 2, 4.",
+                   desired_binning);
+      return false;
+    }
+
+    if (!apply_binning(desired_binning)) {
+      return false;
+    }
+
+    int active_binning = -1;
+    if (!query_binning(active_binning)) {
+      RCLCPP_ERROR(this->get_logger(), "Could not verify the active binning.");
+      return false;
+    }
+
+    if (active_binning != desired_binning) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "Requested BINN=%d but camera reports BINN=%d.",
+                   desired_binning, active_binning);
+      return false;
+    }
+
+    binning_ = desired_binning;
+    return true;
   }
 
   bool enforce_quantization_unit_locked(int desired_quantization_unit) {
@@ -377,7 +451,8 @@ class SipeedTOFMSA010Node : public rclcpp::Node {
       return false;
     };
 
-    if (new_binning.has_value() && !apply_binning(new_binning.value())) {
+    if (new_binning.has_value() &&
+        !enforce_binning_locked(new_binning.value())) {
       return recover_and_fail();
     }
 

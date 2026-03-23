@@ -14,7 +14,7 @@
 
     # Optional sensor-side controls.
     # 1: 100x100, 2: 50x50, 4: 25x25
-    binning: 2
+    binning: 1
     # Legacy working mode from the original driver.
     display_mode: 3
     fps: 10
